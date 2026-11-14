@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "额度看板",
-    "description": "在侧边栏查看 WorkBuddy、豆包、AutoClaw 的今日签到状态与积分/额度余额，并可一键触发每日签到。"
+    "description": "在侧边栏查看 WorkBuddy、豆包、CodeArts、AutoClaw 的今日签到状态与积分/额度余额，并可一键触发每日签到。"
   }
 }

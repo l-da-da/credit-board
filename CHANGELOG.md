@@ -2,7 +2,7 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
-## [Unreleased]
+## [1.1.0] - 2026-11-14
 
 ### Added
 
@@ -20,6 +20,7 @@
 - `install-board.ps1` 重启看板服务前先清理残留的 node 进程，避免旧实例占用 47122 端口导致新实例静默退出（EADDRINUSE）。
 - 源码 `plugin/cordis.patch.yml` 的遗留 `port: 47121` 统一为 47122（插件客户端实际访问的是硬编码 47122，此前无实际影响）。
 - README 的任务清单与卸载命令补全为实际的 5 个计划任务。
+- DSH 插件元数据补齐 CodeArts：`package.json` 版本升至 1.1.0，`locale/*` 与 `docs/DETAIL.md` 不再写「三家客户端」。
 
 ## [1.0.0] - 2026-11-14
 
