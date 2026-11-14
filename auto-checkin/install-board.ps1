@@ -7,12 +7,17 @@ $node = Join-Path $root 'runtime\node.exe'
 $server = Join-Path $root 'board-server.mjs'
 $collect = Join-Path $root 'collect.ps1'
 $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$ws = Join-Path $env:SystemRoot 'System32\wscript.exe'
 
 if (-not (Test-Path $node)) { Write-Output "node missing: $node"; exit 1 }
 if (-not (Test-Path $server)) { Write-Output "server missing: $server"; exit 1 }
 if (-not (Test-Path $collect)) { Write-Output "collect missing: $collect"; exit 1 }
 $collectTick = Join-Path $root 'collect-now.ps1'
 if (-not (Test-Path $collectTick)) { Write-Output "collect tick missing: $collectTick"; exit 1 }
+$hiddenTick = Join-Path $root 'hidden-tick.vbs'
+
+if (-not (Test-Path $hiddenTick)) { Write-Output "hidden tick missing: $hiddenTick"; exit 1 }
+
 
 $user = "$env:USERDOMAIN\$env:USERNAME"
 
@@ -81,7 +86,7 @@ $serverTrigger = @"
       <Delay>PT20S</Delay>
     </LogonTrigger>
 "@
-Register-Task 'DSH-CreditBoard' (Task-Xml 'Credit board data service (127.0.0.1:47122)' $serverTrigger $node "`"$server`"")
+Register-Task 'DSH-CreditBoard' (Task-Xml 'Credit board data service (127.0.0.1:47122)' $serverTrigger $ws "//B //Nologo `"$hiddenTick`" board-service.ps1")
 
 # 2) collector: a 1-minute tick consumes logs\refresh.flag dropped by the board service,
 #    then collects balances in the reliable Calendar-triggered task context
@@ -102,7 +107,7 @@ $collectTrigger = @"
       <Delay>PT2M</Delay>
     </LogonTrigger>
 "@
-Register-Task 'DSH-CreditCollect' (Task-Xml 'Credit board: 1-min tick consumes logs\refresh.flag, then collects balances' $collectTrigger $ps "-NoProfile -ExecutionPolicy Bypass -File `"$collectTick`"")
+Register-Task 'DSH-CreditCollect' (Task-Xml 'Credit board: 1-min tick consumes logs\refresh.flag, then collects balances' $collectTrigger $ws "//B //Nologo `"$hiddenTick`" collect-now.ps1")
 
 schtasks /end /tn DSH-CreditBoard 2>&1 | Out-Null
 Start-Sleep -Seconds 2

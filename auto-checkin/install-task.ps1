@@ -8,6 +8,9 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$ws = Join-Path $env:SystemRoot 'System32\wscript.exe'
+$hiddenTick = Join-Path $root 'hidden-tick.vbs'
+if (-not (Test-Path $hiddenTick)) { Write-Output "hidden tick missing: $hiddenTick"; exit 1 }
 $user = "$env:USERDOMAIN\$env:USERNAME"
 $start = (Get-Date -Format 'yyyy-MM-dd') + 'T00:00:00'
 $resetStart = (Get-Date -Format 'yyyy-MM-dd') + 'T00:05:00'
@@ -93,7 +96,7 @@ $pollTriggers = @"
       <Delay>PT3M</Delay>
     </LogonTrigger>
 "@
-Register-Task 'DSH-DailyCheckin' (Task-Xml 'Daily check-in (polls every 15 min, pauses after a successful run)' $pollTriggers (Join-Path $root 'run-checkin.cmd') '')
+Register-Task 'DSH-DailyCheckin' (Task-Xml 'Daily check-in (polls every 15 min, pauses after a successful run)' $pollTriggers $ws "//B //Nologo `"$hiddenTick`" run-checkin.ps1")
 
 # 2) daily reset at 00:05
 $resetTriggers = @"
@@ -103,7 +106,7 @@ $resetTriggers = @"
       <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
     </CalendarTrigger>
 "@
-Register-Task 'DSH-CheckinReset' (Task-Xml 'Re-enable the daily check-in polling task' $resetTriggers $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $root 'enable-checkin.ps1')`"")
+Register-Task 'DSH-CheckinReset' (Task-Xml 'Re-enable the daily check-in polling task' $resetTriggers $ws "//B //Nologo `"$hiddenTick`" enable-checkin.ps1")
 
 # 3) panel button / service requests: a 1-minute tick consumes logs\force.flag
 $tickTriggers = @"
@@ -117,7 +120,7 @@ $tickTriggers = @"
       <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
     </CalendarTrigger>
 "@
-Register-Task 'DSH-CheckinNow' (Task-Xml 'Panel/service check-in request: 1-min tick consumes logs\force.flag' $tickTriggers $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $root 'checkin-now.ps1')`"")
+Register-Task 'DSH-CheckinNow' (Task-Xml 'Panel/service check-in request: 1-min tick consumes logs\force.flag' $tickTriggers $ws "//B //Nologo `"$hiddenTick`" checkin-now.ps1")
 
 $info = schtasks /query /tn DSH-DailyCheckin /fo LIST /v
 $info | Select-String -Pattern 'TaskName|Status|Next Run Time'

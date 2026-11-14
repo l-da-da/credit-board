@@ -16,6 +16,7 @@
 - **面板「刷新余额 / 立即签到」此前从未真正可用**：看板服务是按需启动的计划任务进程，从它 spawn 的 `schtasks /run` 实测必败（ERROR_PATH_NOT_FOUND），spawn powershell 后其内部任务注册也会被拒绝。修复：服务进程只写 `refresh.flag` / `force.flag`，由带每分钟触发器的两个任务在可靠的日历触发上下文里消费（≤60s 内开始）。
 - 任务注册从 `schtasks /create` 改为 Schedule.Service COM API（`Register-ScheduledTask`），服务上下文里也能工作。
 - 移除 `POST /config` 里冗余的任务重注册：签到时间由每次轮询读取 `config.json` 即时生效（旧路径在服务上下文里报「拒绝访问」且从未成功过）。
+- **计划任务的 PowerShell 动作会闪/常驻控制台窗口**：任务计划程序不隐藏交互会话里的控制台程序，每分钟 tick 时尤其明显。全部任务动作改经 `hidden-tick.vbs`（wscript 隐藏启动，等待完成并转发退出码，全程无窗口）；看板服务经 `wscript → powershell → node` 三级链运行（部分机器的安全策略会挂起 wscript 直接启动 node，powershell 桥接绕开）。
 - `install-board.ps1` 重启看板服务前先清理残留的 node 进程，避免旧实例占用 47122 端口导致新实例静默退出（EADDRINUSE）。
 - 源码 `plugin/cordis.patch.yml` 的遗留 `port: 47121` 统一为 47122（插件客户端实际访问的是硬编码 47122，此前无实际影响）。
 - README 的任务清单与卸载命令补全为实际的 5 个计划任务。

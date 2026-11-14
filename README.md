@@ -105,6 +105,8 @@ credit-board/
 │  ├─ collect.ps1 / .mjs    # 余额采集（顺带读当前登录账号）
 │  ├─ collect-now.ps1       # 每分钟 tick：发现 refresh.flag 就采集
 │  ├─ checkin-now.ps1       # 每分钟 tick：发现 force.flag 就签到
+│  ├─ hidden-tick.vbs       # wscript 隐藏启动器（任务动作，无窗口闪烁）
+│  ├─ board-service.ps1     # 看板服务的 powershell 桥（wscript→powershell→node）
 │  ├─ board-server.mjs      # 看板数据服务 127.0.0.1:47122（只写 flag，不 spawn）
 │  ├─ cdp.mjs               # CDP 连接的小封装
 │  ├─ enable-checkin.ps1    # 恢复轮询任务（Reset 任务调用）
