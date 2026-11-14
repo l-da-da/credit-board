@@ -1,0 +1,71 @@
+---
+name: credit-board
+description: 在 Windows 上安装「每日自动签到 + 额度看板」：自动给 WorkBuddy、豆包签到并汇总积分/额度/签到状态到 DeepSeek Harness 侧边栏面板。当用户提到自动签到、积分看板、WorkBuddy/豆包签到、把额度汇总到 DSH 时使用。
+---
+
+# Credit board（自动签到 + 额度看板）
+
+把三个客户端（WorkBuddy、豆包、AutoClaw）的签到和余额汇总到 DeepSeek Harness 的一个面板里，并每天自动签到。
+
+## 适用环境
+
+- Windows 10 / 11
+- 已安装并登录：WorkBuddy、豆包（AutoClaw 可选，只展示余额）
+- Node.js 22+（脚本用内置 WebSocket）
+- DeepSeek Harness（桌面版或 Web 版均可，插件安装在当前 profile）
+
+## 它做什么
+
+1. **自动签到**：按 `config.json` 的 `checkinTime`（默认 09:30，面板可改）触发；任务每 15 分钟轮询一次，脚本判断该不该跑，**当天签完自动暂停轮询**（次日 00:05 恢复）
+   - WorkBuddy：最小化启动客户端，它自己会领取（日志里 `claimDailyCheckin success`）
+   - 豆包：最小化启动 → 点账号 → 「免费用豆包工作」→ 每日签到；支持多账号自动切换、签完切回
+   - CodeArts：点左下角账号头像 → 活动福利 → 每日签到；余额读「积分用量 x / y」
+2. **额度看板**：DSH 侧边栏底部「💰 额度」浮层，展示
+   - WorkBuddy 积分余额 + 套餐 + 今日领取/连签
+   - 豆包总额度（含「再攒 X 解锁奖励」进度条）+ 各账号签到结果
+   - AutoClaw 总积分
+   - 两个按钮：刷新余额、立即签到
+3. **可选行为**：签到后关闭客户端（默认）或保留进程（面板里勾选，适合让豆包常驻、下次直接点）
+
+## 安装步骤
+
+1. 在本目录执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+默认装到 `%LOCALAPPDATA%\credit-board`，可用 `-Target` 指定目录。
+
+2. 把插件加进 DSH：`设置 → Plugins → Add plugin` → 选择 `<安装目录>\plugin`
+   或在会话里让 agent 执行 `plugin_manager install_bundle`，`target` 填该目录。
+
+3. 刷新 DSH 页面（F5），侧边栏底部出现「💰 额度」。
+
+## 验证
+
+```powershell
+schtasks /run /tn DSH-DailyCheckin          # 手动签到，约 20-60 秒
+schtasks /query /tn DSH-CreditBoard         # 看板服务是否在跑
+Invoke-WebRequest http://127.0.0.1:47122/board   # 看板数据（JSON）
+```
+
+日志在 `<安装目录>\logs\`：`runner.log`（签到）、`collect.log`（余额采集）、`board-server.log`（服务）。
+
+## 排错
+
+| 现象 | 处理 |
+| --- | --- |
+| 面板提示「本地服务未连接」 | `schtasks /end /tn DSH-CreditBoard` 后 `/run`；看 `board-server.log` |
+| 豆包签到超时 | 确认豆包已登录；客户端首次启动慢，稍后重跑一次 |
+| 余额显示「点刷新余额采集」 | 点一下刷新，等 2–3 分钟（会最小化启动三个客户端各读一次） |
+| 任务没有按点跑 | 电脑当时关机；登录后 3 分钟会补跑 |
+| 端口冲突 | 改 `board-server.mjs` 的 PORT 与插件 `cordis.patch.yml` 的 port（两处要一致） |
+
+## 限制（要如实告知用户）
+
+- 客户端额度是**封闭**的：只能通过 UI 操作，没有 API；WorkBuddy/豆包/AutoClaw 的积分无法转成通用 API key。
+- 签到必须启动客户端（最小化、不抢焦点，跑完可关可留）。
+- 电脑关机当天无法签到；账号退出登录后需重新登录。
+- 自动化操作客户端界面属于个人使用场景，可能受各家服务条款约束，请自行评估风险；本项目不读取、不保存密码。
+- 只关闭「脚本自己启动的」客户端，用户手动开着的不会被关。

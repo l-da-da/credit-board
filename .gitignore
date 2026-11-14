@@ -1,0 +1,21 @@
+# runtime / build artifacts
+runtime/
+node_modules/
+*.zip
+
+# local logs and state (never publish)
+logs/
+config.json
+last-run.txt
+force.flag
+*.xml
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+.DS_Store
+
+# install-target leftovers
+task-*.xml

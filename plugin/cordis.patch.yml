@@ -1,0 +1,6 @@
+- insert:
+    - id: credit-board
+      name: '@local/credit-board'
+      config:
+        port: 47122
+        checkinDir: '__CHECKIN_DIR__'
