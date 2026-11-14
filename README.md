@@ -1,5 +1,7 @@
 # Credit board · 每日自动签到 + 额度看板
 
+![credit-board 社交预览](docs/social-preview.jpg)
+
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/l-da-da/credit-board)
 
 把 WorkBuddy、豆包、CodeArts（以及 AutoClaw 的余额）的签到和积分汇总到 **DeepSeek Harness** 侧边栏的一个面板里，并每天自动签到。
