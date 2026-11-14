@@ -190,7 +190,29 @@ async function collectCodeArts() {
       const t = document.body.innerText || '';
       const m = t.match(/积分用量\\s*\\n?\\s*([\\d,\\.]+)\\s*\\/\\s*([\\d,\\.]+)/);
       const signed = /每日签到领\\d+积分\\s*\\n?\\s*今日已领/.test(t);
-      return m ? { used: m[1], total: m[2], signedToday: signed } : null;
+      let account = (t.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}/) || [])[0] || null;
+      if (!account) {
+        // 锚定菜单：从「退出」向上找第一个同时包含「积分用量」的容器（头像菜单根部），取首行
+        const leaf = [...document.querySelectorAll('*')].filter((e) => !e.childElementCount && /退出/.test(e.innerText || '')).pop();
+        if (leaf) {
+          for (let p = leaf.parentElement; p; p = p.parentElement) {
+            if (/积分用量/.test(p.innerText || '')) {
+              const first = (p.innerText || '').split('\\n').map((s) => s.trim()).filter(Boolean)[0] || '';
+              if (first && first.length <= 30 && !/积分|用量|签到|退出|检查|更新|设置|活动|个人|账户|账号/.test(first)) account = first;
+              break;
+            }
+          }
+        }
+      }
+      if (!account) {
+        const lines = t.split('\\n').map((s) => s.trim()).filter(Boolean);
+        const idx = lines.findIndex((s) => s.includes('退出'));
+        if (idx > 0) {
+          const cand = lines[idx - 1];
+          if (cand && cand.length <= 30 && !/积分|签到|用量|设置|活动|退出|检查|更新|帮助|版本|关于/.test(cand)) account = cand;
+        }
+      }
+      return m ? { used: m[1], total: m[2], signedToday: signed, account } : (account ? { account } : null);
     })()`).catch(() => null);
   }
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).catch(() => {});
@@ -227,7 +249,23 @@ async function collectWorkBuddyPanel() {
       const t = document.body.innerText || '';
       const m = t.match(/积分余额\\s*\\n?\\s*([\\d,\\.]+)/);
       const plan = (t.match(/套餐\\s*\\n?\\s*([^\\n]{1,12})/) || [])[1] || null;
-      return m ? { balance: m[1], plan } : null;
+      let account = null;
+      const trig = document.querySelector('.user-menu-trigger');
+      const trigText = trig ? (trig.innerText || '').trim() : '';
+      if (trigText && trigText.length <= 20 && !/积分|套餐|余额/.test(trigText)) account = trigText;
+      if (!account) {
+        const leaf = [...document.querySelectorAll('*')].filter((e) => !e.childElementCount && /积分余额/.test(e.innerText || '')).pop();
+        if (leaf) {
+          let root = leaf;
+          for (let i = 0; i < 8 && root.parentElement; i++) {
+            const p = root.parentElement;
+            if (/套餐/.test(p.innerText || '')) root = p; else break;
+          }
+          const first = (root.innerText || '').split('\\n').map((s) => s.trim()).filter(Boolean)[0] || '';
+          if (first && first.length <= 20 && !/积分|套餐|余额|workbuddy/i.test(first)) account = first;
+        }
+      }
+      return m ? { balance: m[1], plan, account } : null;
     })()`).catch(() => null);
   }
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).catch(() => {});

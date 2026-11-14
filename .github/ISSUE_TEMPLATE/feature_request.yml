@@ -1,0 +1,24 @@
+name: 💡 功能建议
+description: 想让签到 / 看板多支持点什么
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的问题
+      description: 现在的哪个环节让你不顺手？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的方案
+      description: 大概想要什么效果；如果知道实现思路也可以写。
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: 边界确认
+      description: 本项目的实现边界（详见 README「工作原理」）
+      options:
+        - label: 我知道本项目只通过客户端界面（CDP）操作，不修改应用文件、不做登录/切号自动化
+          required: true

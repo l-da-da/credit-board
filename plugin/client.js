@@ -137,7 +137,10 @@ window.__ModuleLoader__.load({
           h('div', { style: S.row },
             h('div', null,
               h('div', { style: S.name }, app.name),
-              app.account ? h('div', { style: { ...S.note, marginTop: 0 } }, app.account) : null,
+              app.account ? h('div', {
+                style: { ...S.note, marginTop: 0, ...(app.accountOk === false ? { color: 'var(--dsw-alias-state-error-primary)', fontWeight: 600 } : {}) },
+                title: app.accountOk === false ? '当前登录账号与期望账号不一致（期望值配置在 auto-checkin/config.json 的 expectedAccounts）' : undefined,
+              }, app.accountOk === false ? `⚠ ${app.account} · 与期望账号不符` : app.account) : null,
             ),
             h('div', { style: S.balance }, app.balance || '—'),
           ),

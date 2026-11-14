@@ -45,9 +45,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ## 验证
 
 ```powershell
-schtasks /run /tn DSH-DailyCheckin          # 手动签到，约 20-60 秒
 schtasks /query /tn DSH-CreditBoard         # 看板服务是否在跑
 Invoke-WebRequest http://127.0.0.1:47122/board   # 看板数据（JSON）
+powershell -File <安装目录>\auto-checkin\run-checkin.ps1 -Force   # 手动签到一次
+powershell -File <安装目录>\auto-checkin\collect.ps1             # 手动采集余额
 ```
 
 日志在 `<安装目录>\logs\`：`runner.log`（签到）、`collect.log`（余额采集）、`board-server.log`（服务）。
@@ -57,6 +58,7 @@ Invoke-WebRequest http://127.0.0.1:47122/board   # 看板数据（JSON）
 | 现象 | 处理 |
 | --- | --- |
 | 面板提示「本地服务未连接」 | `schtasks /end /tn DSH-CreditBoard` 后 `/run`；看 `board-server.log` |
+| 面板「刷新余额 / 立即签到」没反应 | 看板服务只写 flag（refresh.flag / force.flag），由每分钟轮询的 DSH-CreditCollect / DSH-CheckinNow 消费：确认这两个任务的「上次运行时间」在每分钟更新；再看 `logs\collect.log` / `runner.log` |
 | 豆包签到超时 | 确认豆包已登录；客户端首次启动慢，稍后重跑一次 |
 | 余额显示「点刷新余额采集」 | 点一下刷新，等 2–3 分钟（会最小化启动三个客户端各读一次） |
 | 任务没有按点跑 | 电脑当时关机；登录后 3 分钟会补跑 |

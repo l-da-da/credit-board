@@ -8,6 +8,7 @@ logs/
 config.json
 last-run.txt
 force.flag
+refresh.flag
 *.xml
 
 # OS / editor

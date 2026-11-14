@@ -1,11 +1,10 @@
 // 额度看板的本地数据服务（独立进程，由计划任务在登录时启动）
 // GET  /board   -> 汇总 JSON
-// POST /checkin -> 跑 run-checkin.ps1
-// POST /refresh -> 跑 collect.ps1
+// POST /checkin -> 写 force.flag（DSH-CheckinNow 每分钟轮询消费）
+// POST /refresh -> 写 refresh.flag（DSH-CreditCollect 每分钟轮询消费）
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, execFileSync } from 'node:child_process';
 
 const ROOT = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
 const LOG_DIR = path.join(ROOT, 'logs');
@@ -56,24 +55,6 @@ function writeConfig(patch) {
   return next;
 }
 
-function setCheckinTime() {
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  return new Promise((resolve) => {
-    const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'install-task.ps1')], {
-      stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, cwd: ROOT, env,
-    });
-    let out = '';
-    child.stdout.on('data', (d) => { out += d.toString(); });
-    child.stderr.on('data', (d) => { out += d.toString(); });
-    child.on('error', (e) => { log(`schedule update failed: ${e.message}`); resolve(false); });
-    child.on('exit', (code) => {
-      log(`schedule re-registered (exit ${code}) ${out.trim().split('\n').slice(0, 3).join(' | ').slice(0, 200)}`);
-      resolve(code === 0);
-    });
-  });
-}
 function nextRun() {
   const { checkinTime } = readConfig();
   const m = /^(\d{2}):(\d{2})$/.exec(String(checkinTime || '09:30'));
@@ -89,25 +70,22 @@ function nextRun() {
 }
 const running = { checkin: null, refresh: null };
 
-// 直接启动 GUI 应用在“服务进程→powershell”这条链上会被静默拦截，
-// 所以这里只调用计划任务，由任务调度器以用户身份运行脚本。
-function runTask(taskName) {
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  const child = spawn('schtasks.exe', ['/run', '/tn', taskName], {
-    stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env,
-  });
-  child.stdout.on('data', (d) => log(`[${taskName}] ${d.toString().trim().slice(0, 200)}`));
-  child.stderr.on('data', (d) => log(`[${taskName}!] ${d.toString().trim().slice(0, 200)}`));
-  child.on('error', (e) => log(`run ${taskName} failed: ${e.message}`));
-  child.on('exit', (code) => log(`run ${taskName} exit ${code}`));
-  return Date.now();
-}
+// 服务进程（按需启动）的子进程链被证明不可靠（实测：spawn schtasks 报 ERROR_PATH_NOT_FOUND，
+// spawn powershell 后其内部任务注册报拒绝访问），而日历触发创建的任务进程里 schtasks / GUI 都正常。
+// 所以本服务不 spawn 任何东西：签到/采集改写 flag 文件（force.flag / refresh.flag），
+// 由每分钟轮询的 DSH-CheckinNow / DSH-CreditCollect 在可靠上下文里消费；
+// checkinTime 变更由 run-checkin.ps1 每次轮询读 config.json 即时生效，无需重注册任务。
 
 function board() {
   const balance = readJson(path.join(LOG_DIR, 'balance.json')) || {};
   const last = readJson(path.join(LOG_DIR, 'last-result.json')) || {};
   const today = todayLocal();
+  const settings = readConfig();
+  const expected = (settings && settings.expectedAccounts) || {};
+  // 期望账号配置了才参与比对：采集到当前账号则返回布尔，没采集到返回 null（不标红）
+  const acctOk = (id, current) => (expected[id]
+    ? (current != null && current !== '' ? String(current) === String(expected[id]) : null)
+    : undefined);
   const wb = workbuddyLog();
   const wbLog = wb;
   const wbStored = balance.apps && balance.apps.workbuddy;
@@ -125,19 +103,20 @@ function board() {
   return {
     at: new Date().toISOString(),
     today,
-    settings: readConfig(),
+    settings,
     nextRun: nextRun(),
     balanceAt: balance.at || null,
     checkinAt: last.at || null,
     running: {
-      checkin: !!running.checkin && Date.now() - running.checkin < 120000,
-      refresh: !!running.refresh && Date.now() - running.refresh < 150000,
+      checkin: !!running.checkin && Date.now() - running.checkin < 300000,
+      refresh: !!running.refresh && Date.now() - running.refresh < 360000,
     },
     apps: [
       {
         id: 'workbuddy',
         name: 'WorkBuddy',
-        account: '熬夜长身体',
+        account: (wbStored && wbStored.account) || null,
+        accountOk: acctOk('workbuddy', wbStored && wbStored.account),
         balance: wbStored && wbStored.balance ? `${wbStored.balance} 积分` : null,
         balanceNote: wbStored && wbStored.balance
           ? (wbStored.plan ? `套餐 ${wbStored.plan}` : '积分余额')
@@ -157,6 +136,8 @@ function board() {
       {
         id: 'codearts',
         name: 'CodeArts',
+        account: (ca && ca.account) || null,
+        accountOk: acctOk('codearts', ca && ca.account),
         balance: ca && ca.total ? `${ca.total} 积分` : null,
         balanceNote: ca && ca.total ? (ca.used ? `已用 ${ca.used}` : '积分总量') : '点「刷新余额」采集',
         signed: byApp['CodeArts'] ? !String(byApp['CodeArts'].status).includes('fail') : (ca && typeof ca.signedToday === 'boolean' ? ca.signedToday : null),
@@ -193,14 +174,17 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'POST' && url === '/checkin') {
-    // 手动签到：放一个 force 标记，让任务里的时间闸门放行
+    // 手动签到：写 force.flag，由每分钟轮询的 DSH-CheckinNow 消费（≤60s 内开始）
     try { fs.writeFileSync(path.join(LOG_DIR, 'force.flag'), '1'); } catch { /* ignore */ }
-    running.checkin = runTask('DSH-CheckinNow');
+    running.checkin = Date.now();
+    log('checkin requested -> force.flag');
     send(200, { ok: true, started: 'checkin' });
     return;
   }
   if (req.method === 'POST' && url === '/refresh') {
-    running.refresh = runTask('DSH-CreditCollect');
+    try { fs.writeFileSync(path.join(LOG_DIR, 'refresh.flag'), '1'); } catch { /* ignore */ }
+    running.refresh = Date.now();
+    log('refresh requested -> refresh.flag');
     send(200, { ok: true, started: 'refresh' });
     return;
   }
@@ -213,11 +197,16 @@ const server = http.createServer((req, res) => {
         const next = {};
         if (typeof patch.keepOpen === 'boolean') next.keepOpen = patch.keepOpen;
         if (typeof patch.checkinTime === 'string' && /^\d{2}:\d{2}$/.test(patch.checkinTime)) next.checkinTime = patch.checkinTime;
+        if (patch.expectedAccounts && typeof patch.expectedAccounts === 'object' && !Array.isArray(patch.expectedAccounts)) {
+          const clean = {};
+          for (const [k, v] of Object.entries(patch.expectedAccounts)) {
+            if (['workbuddy', 'codearts'].includes(k) && typeof v === 'string' && v.trim()) clean[k] = v.trim();
+          }
+          next.expectedAccounts = clean;
+        }
         const settings = writeConfig(next);
-        Promise.resolve(settings.checkinTime && next.checkinTime ? setCheckinTime() : true).then(() => {
-          log(`config updated: ${JSON.stringify(settings)}`);
-          send(200, { ok: true, settings, nextRun: nextRun() });
-        });
+        log(`config updated: ${JSON.stringify(settings)}`);
+        send(200, { ok: true, settings, nextRun: nextRun() });
       } catch (e) { send(400, { error: String(e && e.message) }); }
     });
     return;

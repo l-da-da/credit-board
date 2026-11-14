@@ -19,13 +19,21 @@ $cmdForce = "@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -Win
 [System.IO.File]::WriteAllText((Join-Path $root 'run-checkin-force.cmd'), $cmdForce, (New-Object System.Text.ASCIIEncoding))
 
 function Register-Task($taskName, $xml) {
+    # Use the Schedule.Service COM API (Register-ScheduledTask) instead of schtasks.exe:
+    # when this script is spawned from the board service process, schtasks.exe fails with
+    # ERROR_PATH_NOT_FOUND even for the user's own tasks. COM registration works everywhere.
     $xmlPath = Join-Path $root ("task-" + $taskName + ".xml")
     [System.IO.File]::WriteAllText($xmlPath, $xml, [System.Text.Encoding]::Unicode)
-    cmd /c "schtasks /delete /tn $taskName /f >nul 2>&1"
-    schtasks /create /tn $taskName /xml $xmlPath /f | Out-Null
-    $code = $LASTEXITCODE
+    try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+    try {
+        Register-ScheduledTask -TaskName $taskName -Xml (Get-Content $xmlPath -Raw) -ErrorAction Stop | Out-Null
+    } catch {
+        Remove-Item $xmlPath -Force -ErrorAction SilentlyContinue
+        Write-Output ("FAILED to register {0}: {1}" -f $taskName, $_.Exception.Message)
+        exit 1
+    }
     Remove-Item $xmlPath -Force -ErrorAction SilentlyContinue
-    if ($code -ne 0) { Write-Output "FAILED to register $taskName (exit $code)"; exit 1 }
+    Write-Output "registered $taskName"
 }
 
 function Task-Xml($description, $triggers, $command, $arguments) {
@@ -97,12 +105,23 @@ $resetTriggers = @"
 "@
 Register-Task 'DSH-CheckinReset' (Task-Xml 'Re-enable the daily check-in polling task' $resetTriggers $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $root 'enable-checkin.ps1')`"")
 
-# 3) on-demand check-in (panel button)
-Register-Task 'DSH-CheckinNow' (Task-Xml 'Run the check-in immediately' '' (Join-Path $root 'run-checkin-force.cmd') '')
+# 3) panel button / service requests: a 1-minute tick consumes logs\force.flag
+$tickTriggers = @"
+<CalendarTrigger>
+      <StartBoundary>$start</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+      <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>
+    </CalendarTrigger>
+"@
+Register-Task 'DSH-CheckinNow' (Task-Xml 'Panel/service check-in request: 1-min tick consumes logs\force.flag' $tickTriggers $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $root 'checkin-now.ps1')`"")
 
 $info = schtasks /query /tn DSH-DailyCheckin /fo LIST /v
 $info | Select-String -Pattern 'TaskName|Status|Next Run Time'
 Write-Output ''
-Write-Output 'Tasks registered: DSH-DailyCheckin, DSH-CheckinReset, DSH-CheckinNow'
-Write-Output 'Run now: schtasks /run /tn DSH-CheckinNow'
+Write-Output 'Tasks registered: DSH-DailyCheckin, DSH-CheckinReset, DSH-CheckinNow (1-min tick)'
+Write-Output 'Check in now: panel button, or powershell -File run-checkin.ps1 -Force (schtasks /run DSH-CheckinNow only queues via force.flag)'
 Write-Output 'Logs: <folder>\logs\runner.log'
