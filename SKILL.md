@@ -1,16 +1,16 @@
 ---
 name: credit-board
-description: 在 Windows 上安装「每日自动签到 + 额度看板」：自动给 WorkBuddy、豆包签到并汇总积分/额度/签到状态到 DeepSeek Harness 侧边栏面板。当用户提到自动签到、积分看板、WorkBuddy/豆包签到、把额度汇总到 DSH 时使用。
+description: 在 Windows 上安装「每日自动签到 + 额度看板」：自动给 WorkBuddy、豆包、CodeArts 签到并汇总积分/额度/签到状态到 DeepSeek Harness 侧边栏面板。当用户提到自动签到、积分看板、WorkBuddy/豆包/CodeArts 签到、把额度汇总到 DSH 时使用。
 ---
 
 # Credit board（自动签到 + 额度看板）
 
-把三个客户端（WorkBuddy、豆包、AutoClaw）的签到和余额汇总到 DeepSeek Harness 的一个面板里，并每天自动签到。
+把四个客户端（WorkBuddy、豆包、CodeArts、AutoClaw）的签到和余额汇总到 DeepSeek Harness 的一个面板里，并每天自动签到（AutoClaw 只展示余额，不签到）。
 
 ## 适用环境
 
 - Windows 10 / 11
-- 已安装并登录：WorkBuddy、豆包（AutoClaw 可选，只展示余额）
+- 已安装并登录：WorkBuddy、豆包、CodeArts（AutoClaw 可选，只展示余额）
 - Node.js 22+（脚本用内置 WebSocket）
 - DeepSeek Harness（桌面版或 Web 版均可，插件安装在当前 profile）
 
@@ -57,16 +57,16 @@ powershell -File <安装目录>\auto-checkin\collect.ps1             # 手动采
 
 | 现象 | 处理 |
 | --- | --- |
-| 面板提示「本地服务未连接」 | `schtasks /end /tn DSH-CreditBoard` 后 `/run`；看 `board-server.log` |
+| 面板提示「本地服务未连接」 | 在 auto-checkin 目录跑 `powershell -File install-board.ps1`（会清残留 node 再重启）；不要只用 `schtasks /end + /run`（/end 杀不掉孙子 node，会占 47122 端口）。看 `board-server.log` |
 | 面板「刷新余额 / 立即签到」没反应 | 看板服务只写 flag（refresh.flag / force.flag），由每分钟轮询的 DSH-CreditCollect / DSH-CheckinNow 消费：确认这两个任务的「上次运行时间」在每分钟更新；再看 `logs\collect.log` / `runner.log` |
 | 豆包签到超时 | 确认豆包已登录；客户端首次启动慢，稍后重跑一次 |
-| 余额显示「点刷新余额采集」 | 点一下刷新，等 2–3 分钟（会最小化启动三个客户端各读一次） |
+| 余额显示「点刷新余额采集」 | 点一下刷新，等 2–3 分钟（会最小化启动各客户端读一次） |
 | 任务没有按点跑 | 电脑当时关机；登录后 3 分钟会补跑 |
 | 端口冲突 | 改 `board-server.mjs` 的 PORT 与插件 `cordis.patch.yml` 的 port（两处要一致） |
 
 ## 限制（要如实告知用户）
 
-- 客户端额度是**封闭**的：只能通过 UI 操作，没有 API；WorkBuddy/豆包/AutoClaw 的积分无法转成通用 API key。
+- 客户端额度是**封闭**的：只能通过 UI 操作，没有 API；WorkBuddy/豆包/CodeArts/AutoClaw 的积分无法转成通用 API key。
 - 签到必须启动客户端（最小化、不抢焦点，跑完可关可留）。
 - 电脑关机当天无法签到；账号退出登录后需重新登录。
 - 自动化操作客户端界面属于个人使用场景，可能受各家服务条款约束，请自行评估风险；本项目不读取、不保存密码。

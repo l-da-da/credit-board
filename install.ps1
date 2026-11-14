@@ -74,7 +74,7 @@ Write-Output '然后刷新 DSH 页面（F5），侧边栏底部会出现「💰 
 Write-Output ''
 Write-Output '手动签到：schtasks /run /tn DSH-DailyCheckin'
 Write-Output '手动采集余额：schtasks /run /tn DSH-CreditCollect'
-Write-Output '重启看板服务：schtasks /end /tn DSH-CreditBoard; schtasks /run /tn DSH-CreditBoard'
+Write-Output '重启看板服务：powershell -File auto-checkin\install-board.ps1   # 不要只用 schtasks /end + /run'
 Write-Output '日志目录：'
 Write-Output "  $Target\logs"
 Write-Output '=============================='

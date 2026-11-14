@@ -79,8 +79,8 @@ CodeArts 和 WorkBuddy 是单账号应用，客户端里登错账号的话，签
 powershell -NoProfile -ExecutionPolicy Bypass -File .\auto-checkin\run-checkin.ps1 -Force
 # 立刻采集余额（等同面板「刷新余额」）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\auto-checkin\collect.ps1
-# 重启看板服务
-schtasks /end /tn DSH-CreditBoard; schtasks /run /tn DSH-CreditBoard
+# 重启看板服务（会先清残留 node，避免 47122 被占）
+powershell -NoProfile -ExecutionPolicy Bypass -File .\auto-checkin\install-board.ps1
 ```
 
 ## 工作原理
