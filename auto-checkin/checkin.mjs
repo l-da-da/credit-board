@@ -33,6 +33,12 @@ function log(...parts) {
   try { fs.appendFileSync(path.join(LOG_DIR, `checkin-${todayLocal()}.log`), line + '\n', 'utf8'); } catch { }
 }
 
+// 签到进度（看板读它显示「签到中 · 当前在签哪一家」）
+const PROGRESS = path.join(LOG_DIR, 'progress.json');
+function progress(patch) {
+  try { fs.writeFileSync(PROGRESS, JSON.stringify({ at: new Date().toISOString(), ...patch }), 'utf8'); } catch { }
+}
+
 // 本次由脚本启动的应用（run-checkin.ps1 写入）
 let launched = {};
 try {
@@ -334,7 +340,9 @@ async function signByTaskPanel(cdp, port) {
     : { status: 'fail', detail: '点了签到但页面没变化' };
 }
 
-// ---------- WorkBuddy：启动即自动领取 ----------
+// ---------- WorkBuddy：CDP 调应用自身的签到接口（等同点侧边栏的「立即领取」） ----------
+// 注意：它不会「启动即领」。界面里没有固定入口，签到卡片只是底部活动轮播里的一张，
+// 所以走 wb.account.checkinStatus() / checkin()，日志只做兜底。
 async function doWorkBuddy() {
   const c = CFG.workbuddy;
   const today = new Date().toLocaleDateString('sv-SE');
@@ -356,12 +364,62 @@ async function doWorkBuddy() {
     } catch { return false; }
   };
 
-  if (claimedToday()) return { status: 'ok', detail: '今天已自动领取（日志确认）' };
-  if (!tasklist(c.proc)) return { status: 'skipped', detail: '客户端没在运行，本次跳过' };
+  // 首选：通过 CDP 调 WorkBuddy 自己的签到接口（就是面板上「立即领取」背后的同一个调用）。
+  // 它的界面上没有固定入口，签到卡片是侧边栏底部轮播里的一张，靠点 DOM 很不稳；
+  // wb.account.checkinStatus()/checkin() 才是应用内部用的那份接口。
+  const port = 9533;
+  const page = await waitFor(async () => {
+    const ts = await listTargets(port).catch(() => []);
+    return ts.find((t) => t.type === 'page' && /index\.html/.test(t.url)) || ts.find((t) => t.type === 'page');
+  }, 30_000, 800);
+  if (!page) {
+    if (claimedToday()) return { status: 'ok', detail: '今天已签到（日志确认）' };
+    return { status: 'fail', detail: 'WorkBuddy 没开调试端口 9533（客户端不是脚本启动的）' };
+  }
 
-  const ok = await waitFor(() => claimedToday(), 150_000, 3000);
-  if (!ok) return { status: 'fail', detail: '客户端已启动，但 150 秒内没等到今日领取记录' };
-  return { status: 'ok', detail: '已启动客户端并自动领取今日积分' };
+  const cdp = await connect(page.webSocketDebuggerUrl);
+  try {
+    await cdp.send('Runtime.enable');
+    const ready = await waitFor(
+      () => evalJs(cdp, `!!(window.wb && window.wb.account && window.wb.account.checkinStatus)`).catch(() => false),
+      60_000, 1000,
+    );
+    if (!ready) {
+      if (claimedToday()) return { status: 'ok', detail: '今天已签到（日志确认）' };
+      return { status: 'fail', detail: 'WorkBuddy 界面没加载出来（页面里没有 wb.account）' };
+    }
+
+    const readStatus = () => evalJs(cdp, `(async () => {
+      try { return await window.wb.account.checkinStatus(); }
+      catch (e) { return { error: String((e && e.message) || e) }; }
+    })()`).catch(() => null);
+
+    const s1 = await readStatus();
+    if (!s1) return { status: 'fail', detail: '读不到 WorkBuddy 签到状态' };
+    if (s1.error) return { status: 'fail', detail: `读不到 WorkBuddy 签到状态：${s1.error}` };
+    if (s1.active === false) return { status: 'ok', detail: 'WorkBuddy 签到活动当前不活跃，无需签到' };
+    if (s1.todayCheckedIn) return { status: 'ok', detail: `今天已签到（连签 ${s1.streakDays ?? '-'} 天）` };
+
+    // 未签：调应用自己的领取接口（已领过时后端回 400，所以下面要再看一次状态）
+    const claim = await evalJs(cdp, `(async () => {
+      try { return { ok: true, r: await window.wb.account.checkin() }; }
+      catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+    })()`).catch(() => null);
+
+    const s2 = await waitFor(async () => {
+      const s = await readStatus();
+      return s && s.todayCheckedIn ? s : null;
+    }, 10_000, 800);
+
+    if (s2) {
+      const credit = (claim && claim.ok && claim.r && claim.r.credit) || s1.todayCredit || 0;
+      return { status: 'ok', detail: `已领取${credit ? ` +${credit} 积分` : ''}，连签 ${s2.streakDays ?? '-'} 天` };
+    }
+    if (claim && !claim.ok) return { status: 'fail', detail: `领取失败：${claim.error}` };
+    return { status: 'fail', detail: '调了签到接口，但状态没变成已签到' };
+  } finally {
+    cdp.close();
+  }
 }
 
 // ---------- 豆包：多账号逐个签到 ----------
@@ -376,7 +434,13 @@ async function doDoubao() {
   let cdp = await connectChat(c.port);
   if (!cdp) return { status: 'fail', detail: '没找到豆包主页面（可能未登录）' };
 
-  const { names, current } = await listAccounts(cdp);
+  // 刚启动的豆包界面可能还没渲染完，账号弹窗会读空——重试几次再下结论
+  let accounts = await listAccounts(cdp);
+  for (let i = 0; i < 3 && !(accounts.names && accounts.names.length); i++) {
+    await sleep(2500);
+    accounts = await listAccounts(cdp);
+  }
+  const { names, current } = accounts;
   // 解析异常（比如把整页文字当成账号）时，保守起见只签当前账号
   const sane = names.length > 0 && names.length <= 5 && names.every((n) => n.length <= 20 && !n.includes('\n'));
   if (!sane) {
@@ -432,100 +496,116 @@ async function signCurrent(cdp, port) {
   return signByTaskPanel(cdp, port);
 }
 
-// ---------- CodeArts：头像 → 活动福利 → 每日签到 ----------
+// ---------- CodeArts：左下角头像 → 活动福利 → 第一项「每日签到领100积分」 ----------
+// 新版面板把签到放在「活动福利」的第一项，按钮文字是「每日领取」（不再是「签到」）；
+// 领取之后这一项会移进「已完成与已隐藏的活动」，并显示「今日已领」。
 async function doCodeArts() {
   const port = 9534;
   const page = await waitFor(async () => {
     const ts = await listTargets(port).catch(() => []);
     return ts.find((t) => t.type === 'page' && !/devtools/.test(t.url));
-  }, 90_000, 1500);
-  if (!page) return { status: 'fail', detail: 'CodeArts 没能启动' };
+  }, 45_000, 1000);
+  if (!page) return { status: 'fail', detail: 'CodeArts 没开调试端口 9534（客户端不是脚本启动的，或启动太慢）' };
 
   const cdp = await connect(page.webSocketDebuggerUrl);
   await cdp.send('Runtime.enable');
   await applyViewport(cdp, 1440, 900);
 
   const ready = await waitFor(
-    () => evalJs(cdp, `document.querySelectorAll('.user-avatar').length > 0`).catch(() => false),
-    60_000, 1500,
+    () => evalJs(cdp, `!!document.querySelector('.user-avatar')`).catch(() => false),
+    60_000, 1000,
   );
   if (!ready) { cdp.close(); return { status: 'fail', detail: 'CodeArts 界面没加载出来' }; }
 
-  const avatar = await evalJs(cdp, `(() => {
-    const el = document.querySelector('.user-avatar');
-    if (!el) return null;
-    const r = el.getBoundingClientRect();
-    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-  })()`).catch(() => null);
-  if (!avatar) { cdp.close(); return { status: 'fail', detail: '找不到头像按钮' }; }
+  // 面板是否已经开着（签到条目 / 已完成区 / 面板本身，任一存在即算开）
+  const panelOpen = () => evalJs(cdp,
+    `!!document.querySelector('.welfare-activity-item, .welfare-hidden-section, .welfare-popup-header, .welfare-popup')`)
+    .catch(() => false);
 
-  // 打开账号菜单（可能已经开着，点一下会关掉，所以先看文本）
-  const menuOpen = () => evalJs(cdp, `(document.body.innerText||'').includes('活动福利')`).catch(() => false);
-  if (!(await menuOpen())) {
-    await clickAt(cdp, avatar.x, avatar.y);
-    await waitFor(menuOpen, 8000, 800);
-  }
-
-  let opened = null;
-  for (let i = 0; i < 4 && !opened; i++) {
-    opened = await clickText(cdp, ['活动福利']);
-    if (!opened) { await sleep(1200); await clickAt(cdp, avatar.x, avatar.y); await sleep(1200); }
-  }
-  if (!opened) { cdp.close(); return { status: 'fail', detail: '没找到「活动福利」入口' }; }
-  // 等活动福利面板出现（推荐码 / 学生认证是它的固定条目）
-  await waitFor(
-    () => evalJs(cdp, `(document.body.innerText||'').includes('推荐码上有礼')`).catch(() => false),
-    10_000, 800,
-  );
-  await sleep(800);
-
-  // 展开「已完成与已隐藏的活动」，签到条目可能收在里面
-  for (let i = 0; i < 5; i++) {
-    const seen = await evalJs(cdp, `(document.body.innerText||'').includes('每日签到')`).catch(() => false);
-    if (seen) break;
-    const header = await evalJs(cdp, `(() => {
-      const el = [...document.querySelectorAll('div,span')].find(e => (e.innerText || '').trim().startsWith('已完成与已隐藏的活动'));
+  if (!(await panelOpen())) {
+    // 左下角头像菜单（可能已经开着，点一下会关掉，所以先判断）
+    const menuOpen = () => evalJs(cdp, `!!document.querySelector('.activity-welfare-item')`).catch(() => false);
+    if (!(await menuOpen())) {
+      const avatar = await evalJs(cdp, `(() => {
+        const el = document.querySelector('.user-avatar');
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+      })()`).catch(() => null);
+      if (!avatar) { cdp.close(); return { status: 'fail', detail: '找不到头像按钮' }; }
+      await clickAt(cdp, avatar.x, avatar.y);
+      await waitFor(menuOpen, 8000, 700);
+    }
+    const entry = await evalJs(cdp, `(() => {
+      const el = document.querySelector('.activity-welfare-item')
+        || [...document.querySelectorAll('button,div,span')]
+          .find((e) => (e.innerText || '').trim() === '活动福利' && e.getBoundingClientRect().width > 40);
       if (!el) return null;
       const r = el.getBoundingClientRect();
-      if (r.width < 20 || r.height < 10) return null;
       return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
     })()`).catch(() => null);
-    if (!header) break;
-    await clickAt(cdp, header.x, header.y);
-    await sleep(1200);
+    if (!entry) { cdp.close(); return { status: 'fail', detail: '没找到「活动福利」入口' }; }
+    await clickAt(cdp, entry.x, entry.y);
+    const shown = await waitFor(panelOpen, 12_000, 700);
+    if (!shown) { cdp.close(); return { status: 'fail', detail: '点了「活动福利」但面板没出来' }; }
   }
 
-  const state = () => evalJs(cdp, `(() => {
-    const t = document.body.innerText || '';
-    const done = /每日签到领\\d+积分\\s*\\n?\\s*今日已领/.test(t);
-    const has = t.includes('每日签到');
-    return { has, done };
-  })()`).catch(() => ({ has: false, done: false }));
-
-  const s1 = await state();
-  if (s1.done) { cdp.close(); return { status: 'ok', detail: '今天已签到（活动福利里显示今日已领）' }; }
-
-  // 没签：找「签到」按钮
-  const btn = await evalJs(cdp, `(() => {
-    const cands = [...document.querySelectorAll('button,[role=button],div,span')].filter(e => {
-      const s = (e.innerText || '').trim();
-      return /^(签到|立即签到|去签到|领取)$/.test(s);
-    });
-    for (const el of cands) {
+  // 「已完成与已隐藏的活动」默认是折叠的：签到后的条目在里面，展开才能读到「今日已领」
+  const expandHidden = async () => {
+    const st = await evalJs(cdp, `(() => {
+      const s = document.querySelector('.welfare-hidden-section');
+      return s ? { expanded: s.classList.contains('is-expanded') } : null;
+    })()`).catch(() => null);
+    if (!st || st.expanded) return;
+    const box = await evalJs(cdp, `(() => {
+      const el = document.querySelector('.welfare-hidden-section__label') || document.querySelector('.welfare-hidden-section');
+      if (!el) return null;
       const r = el.getBoundingClientRect();
-      if (r.width < 20 || r.height < 12) continue;
-      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2), t: el.innerText.trim() };
-    }
-    return null;
-  })()`).catch(() => null);
-  if (!btn) { cdp.close(); return { status: 'fail', detail: '活动福利里没找到签到按钮' }; }
+      if (r.width < 20 || r.height < 8) return null;
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`).catch(() => null);
+    if (!box) return;
+    await clickAt(cdp, box.x, box.y);
+    await sleep(900);
+  };
 
-  await clickAt(cdp, btn.x, btn.y);
-  await sleep(2500);
-  const s2 = await state();
+  const readState = async () => {
+    await expandHidden();
+    return evalJs(cdp, `(() => {
+      const items = [...document.querySelectorAll('.welfare-activity-item')];
+      const item = items.find((e) => /每日签到/.test(e.innerText || '')) || null;
+      let btn = null;
+      if (item) {
+        btn = [...item.querySelectorAll('button')]
+          .find((b) => /领取|签到/.test(b.innerText || '') && b.getBoundingClientRect().width > 16) || null;
+      }
+      const hidden = document.querySelector('.welfare-hidden-section');
+      const hiddenText = hidden ? (hidden.innerText || '') : '';
+      const signedHidden = /每日签到[\\s\\S]{0,40}今日已领/.test(hiddenText);
+      const signedBody = /每日签到[\\s\\S]{0,40}今日已领/.test(document.body.innerText || '');
+      const r = btn ? btn.getBoundingClientRect() : null;
+      return {
+        hasItem: !!item,
+        btnText: btn ? (btn.innerText || '').trim() : null,
+        btn: r ? { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) } : null,
+        signed: signedHidden || signedBody || (!!item && !btn && /今日已领|已领取/.test(item.innerText || '')),
+      };
+    })()`).catch(() => null);
+  };
+
+  const s1 = await readState();
+  if (!s1) { cdp.close(); return { status: 'fail', detail: '读不到活动福利面板内容' }; }
+  if (s1.signed) { cdp.close(); return { status: 'ok', detail: '今天已签到（活动福利里显示今日已领）' }; }
+  if (!s1.btn) { cdp.close(); return { status: 'fail', detail: '活动福利里没找到「每日领取」按钮' }; }
+
+  await clickAt(cdp, s1.btn.x, s1.btn.y);
+  const s2 = await waitFor(async () => {
+    const s = await readState();
+    return s && s.signed ? s : null;
+  }, 12_000, 900);
   cdp.close();
-  if (s2.done) return { status: 'ok', detail: `点了「${btn.t}」，已显示今日已领` };
-  return { status: 'fail', detail: `点了「${btn.t}」但没看到今日已领` };
+  if (s2) return { status: 'ok', detail: `点了「${s1.btnText}」，已显示今日已领` };
+  return { status: 'fail', detail: `点了「${s1.btnText}」但没看到今日已领` };
 }
 // ---------- 主流程 ----------
 const RUNNERS = { workbuddy: doWorkBuddy, doubao: doDoubao, codearts: doCodeArts };
@@ -534,6 +614,7 @@ const results = [];
 for (const key of Object.keys(RUNNERS)) {
   if (only && key !== only) continue;
   const label = CFG[key].name;
+  progress({ stage: 'app', app: label });
   log(`===== ${label} 开始 =====`);
   const t0 = Date.now();
   let r;
@@ -544,6 +625,7 @@ for (const key of Object.keys(RUNNERS)) {
 }
 
 log(`===== 完成：${results.map((r) => `${r.app}: ${r.status}`).join(' | ')} =====`);
+progress({ stage: 'wrapping' });
 fs.writeFileSync(path.join(LOG_DIR, `checkin-${todayLocal()}.log`), logLines.join('\n') + '\n', 'utf8');
 fs.writeFileSync(path.join(LOG_DIR, 'last-result.json'), JSON.stringify({ at: new Date().toISOString(), results }, null, 2), 'utf8');
 

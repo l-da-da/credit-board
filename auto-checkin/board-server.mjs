@@ -70,6 +70,26 @@ function nextRun() {
 }
 const running = { checkin: null, refresh: null };
 
+// 签到进度：run-checkin.ps1（launching/done）和 checkin.mjs（app/wrapping）共同维护
+const PROGRESS = path.join(LOG_DIR, 'progress.json');
+function checkinProgress() {
+  const p = readJson(PROGRESS);
+  if (!p || !p.at) return { running: false, stage: null, app: null, at: null, ageMs: null, stalled: false };
+  const at = Date.parse(p.at);
+  const ageMs = Number.isFinite(at) ? Date.now() - at : null;
+  const fresh = ageMs != null && ageMs < 8 * 60 * 1000;
+  // 手动签到要等每分钟一次的 tick，最多 1 分钟；2 分钟还没开始说明 tick 没在跑
+  const stalled = p.stage === 'queued' && ageMs != null && ageMs > 120000;
+  return {
+    running: fresh && p.stage !== 'done',
+    stage: p.stage,
+    app: p.app || null,
+    at: p.at,
+    ageMs,
+    stalled,
+  };
+}
+
 // 服务进程（按需启动）的子进程链被证明不可靠（实测：spawn schtasks 报 ERROR_PATH_NOT_FOUND，
 // spawn powershell 后其内部任务注册报拒绝访问），而日历触发创建的任务进程里 schtasks / GUI 都正常。
 // 所以本服务不 spawn 任何东西：签到/采集改写 flag 文件（force.flag / refresh.flag），
@@ -78,6 +98,8 @@ const running = { checkin: null, refresh: null };
 
 function board() {
   const balance = readJson(path.join(LOG_DIR, 'balance.json')) || {};
+  // 采集完成（balance.json 的 at 比请求时间新）就把「采集中」清掉
+  if (running.refresh && balance.at && Date.parse(balance.at) >= running.refresh) running.refresh = null;
   const last = readJson(path.join(LOG_DIR, 'last-result.json')) || {};
   const today = todayLocal();
   const settings = readConfig();
@@ -92,6 +114,7 @@ function board() {
   const results = Array.isArray(last.results) ? last.results : [];
   const byApp = Object.fromEntries(results.map((r) => [r.app, r]));
   const doubao = byApp['豆包'];
+  const wbResult = byApp['WorkBuddy'];
   const ac = balance.apps && balance.apps.autoclaw;
   const ca = balance.apps && balance.apps.codearts;
   const db = balance.apps && balance.apps.doubao;
@@ -111,6 +134,8 @@ function board() {
       checkin: !!running.checkin && Date.now() - running.checkin < 300000,
       refresh: !!running.refresh && Date.now() - running.refresh < 360000,
     },
+    checkin: checkinProgress(),
+    lastResults: results.map((r) => ({ app: r.app, status: r.status, detail: r.detail })),
     apps: [
       {
         id: 'workbuddy',
@@ -121,8 +146,13 @@ function board() {
         balanceNote: wbStored && wbStored.balance
           ? (wbStored.plan ? `套餐 ${wbStored.plan}` : '积分余额')
           : '点「刷新余额」采集',
-        signed: wbLog ? wbLog.checkedIn : (wbStored ? wbStored.checkedIn : null),
-        signedNote: wbLog && wbLog.date === today ? `连签 ${wbLog.streak ?? '-'} 天 · 今日 +${wbLog.todayCredit ?? '-'}` : '今日日志未更新',
+        // 签到结果优先用本次签到结果（点按钮后立刻准确），没跑过才退回日志
+        signed: wbResult && wbResult.status !== 'skipped'
+          ? String(wbResult.status) !== 'fail'
+          : (wbLog ? wbLog.checkedIn : (wbStored ? wbStored.checkedIn : null)),
+        signedNote: wbResult && wbResult.status !== 'skipped'
+          ? String(wbResult.detail).slice(0, 90)
+          : (wbLog && wbLog.date === today ? `连签 ${wbLog.streak ?? '-'} 天 · 今日 +${wbLog.todayCredit ?? '-'}` : '今日日志未更新'),
       },
       {
         id: 'doubao',
@@ -176,6 +206,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && url === '/checkin') {
     // 手动签到：写 force.flag，由每分钟轮询的 DSH-CheckinNow 消费（≤60s 内开始）
     try { fs.writeFileSync(path.join(LOG_DIR, 'force.flag'), '1'); } catch { /* ignore */ }
+    // 已经有一次在跑就不要覆盖它的进度
+    if (!checkinProgress().running) {
+      try {
+        fs.writeFileSync(PROGRESS, JSON.stringify({ at: new Date().toISOString(), stage: 'queued', source: 'manual' }), 'utf8');
+      } catch { /* ignore */ }
+    }
     running.checkin = Date.now();
     log('checkin requested -> force.flag');
     send(200, { ok: true, started: 'checkin' });

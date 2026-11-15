@@ -9,6 +9,17 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logDir = Join-Path $root 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $log = Join-Path $logDir 'runner.log'
+$progressFile = Join-Path $logDir 'progress.json'
+
+# Progress file consumed by the board service (shows "signing in ..." in the panel).
+# ASCII-only stage names on purpose: PowerShell 5.1 reads this file as ANSI.
+function Write-CheckinProgress([string]$stage, $extra) {
+    $o = [ordered]@{ at = (Get-Date).ToUniversalTime().ToString('o'); stage = $stage }
+    if ($extra) { foreach ($k in $extra.Keys) { $o[$k] = $extra[$k] } }
+    try {
+        [System.IO.File]::WriteAllText($progressFile, ($o | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+    } catch { }
+}
 
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -43,6 +54,7 @@ if (Test-Path $cfgPath) {
 }
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 Add-Content -Path $log -Value ("[{0}] ---- start ----" -f $stamp)
+Write-CheckinProgress 'launching'
 
 # ---------- minimized launcher ----------
 if (-not ("QuietLauncher" -as [type])) {
@@ -137,17 +149,38 @@ function Test-Running([string]$name) {
     return [bool]$p
 }
 
+function Test-PortOpen([int]$port) {
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $iar = $client.BeginConnect('127.0.0.1', $port, $null, $null)
+        if (-not $iar.AsyncWaitHandle.WaitOne(700)) { return $false }
+        $client.EndConnect($iar)
+        return $true
+    } catch { return $false } finally { try { $client.Close() } catch { } }
+}
+
 $apps = @(
-    @{ key = 'workbuddy'; proc = 'WorkBuddy'; exe = (Join-Path $env:LOCALAPPDATA 'Programs\WorkBuddy\WorkBuddy.exe'); args = '' },
-    @{ key = 'doubao';    proc = 'Doubao';    exe = (Join-Path $env:LOCALAPPDATA 'Doubao\Application\Doubao\Doubao.exe'); args = '--remote-debugging-port=9531' }
-    @{ key = 'codearts';  proc = 'CodeArts';  exe = (Join-Path $env:LOCALAPPDATA 'Programs\CodeArts\CodeArts.exe'); args = '--remote-debugging-port=9534' }
+    @{ key = 'workbuddy'; proc = 'WorkBuddy'; exe = (Join-Path $env:LOCALAPPDATA 'Programs\WorkBuddy\WorkBuddy.exe'); args = '--remote-debugging-port=9533'; port = 9533 },
+    @{ key = 'doubao';    proc = 'Doubao';    exe = (Join-Path $env:LOCALAPPDATA 'Doubao\Application\Doubao\Doubao.exe'); args = '--remote-debugging-port=9531'; port = 9531 }
+    @{ key = 'codearts';  proc = 'CodeArts';  exe = (Join-Path $env:LOCALAPPDATA 'Programs\CodeArts\CodeArts.exe'); args = '--remote-debugging-port=9534'; port = 9534 }
 )
 
+# Apps that were already running (without a debug port) get restarted once so
+# CDP can drive them. They belong to the user, so they are left running
+# afterwards instead of being closed with the ones this run started.
 $launched = @{}
+$restarted = @{}
 foreach ($a in $apps) {
     if (Test-Running $a.proc) {
-        Add-Content -Path $log -Value ("[{0}] {1} already running, keep as is" -f (Get-Date -Format 'HH:mm:ss'), $a.key)
-        continue
+        if ($a.port -gt 0 -and -not (Test-PortOpen $a.port)) {
+            Add-Content -Path $log -Value ("[{0}] {1} running without debug port {2}, restarting" -f (Get-Date -Format 'HH:mm:ss'), $a.key, $a.port)
+            Stop-Process -Name $a.proc -Force -ErrorAction SilentlyContinue
+            $restarted[$a.key] = $true
+            Start-Sleep -Milliseconds 2000
+        } else {
+            Add-Content -Path $log -Value ("[{0}] {1} already running, keep as is" -f (Get-Date -Format 'HH:mm:ss'), $a.key)
+            continue
+        }
     }
     if (-not (Test-Path $a.exe)) {
         Add-Content -Path $log -Value ("[{0}] {1} exe not found: {2}" -f (Get-Date -Format 'HH:mm:ss'), $a.key, $a.exe)
@@ -196,6 +229,10 @@ if ($code -eq 0) {
     }
     foreach ($k in @($launched.Keys)) {
         if ($keepOpen) { break }
+        if ($restarted.ContainsKey($k)) {
+            Add-Content -Path $log -Value ("[{0}] {1} was already running before, left open" -f (Get-Date -Format 'HH:mm:ss'), $k)
+            continue
+        }
         $pn = $procMap[$k]
         if (-not $pn) { continue }
         if (Get-Process -Name $pn -ErrorAction SilentlyContinue) {
@@ -205,6 +242,7 @@ if ($code -eq 0) {
     }
     Add-Content -Path $log -Value $output -Encoding UTF8
     Add-Content -Path $log -Value ("[{0}] ---- done exit={1} ----" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $code)
+    Write-CheckinProgress 'done' @{ ok = ($code -eq 0) }
 }
 
 exit $code

@@ -61,6 +61,12 @@ window.__ModuleLoader__.load({
         color: primary ? '#fff' : 'var(--dsw-alias-label-primary)',
       }),
       updated: { color: 'var(--dsw-alias-label-secondary)', fontSize: 11, marginTop: 8, textAlign: 'right' },
+      live: {
+        display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, padding: '6px 8px',
+        borderRadius: 8, fontSize: 12, background: 'var(--dsw-alias-bg-layer-2)',
+        color: 'var(--dsw-alias-label-primary)',
+      },
+      dot: { width: 7, height: 7, borderRadius: 99, background: 'var(--dsw-alias-brand-primary)' },
       bar: { height: 6, borderRadius: 3, background: 'var(--dsw-alias-bg-layer-2)', marginTop: 10, overflow: 'hidden' },
       barFill: { height: '100%', borderRadius: 3, background: 'var(--dsw-alias-brand-primary)', transition: 'width .3s ease' },
       barLabel: { display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'var(--dsw-alias-label-secondary)', marginTop: 4 },
@@ -94,12 +100,17 @@ window.__ModuleLoader__.load({
         }
       }, []);
 
+      const running = !!(data && data.checkin && data.checkin.running);
+      const refreshing = !!(data && data.running && data.running.refresh);
+
       React.useEffect(() => {
         if (!isOpen) return;
         load();
-        const t = setInterval(load, 15000);
+        // 签到/采集进行中（或刚点过按钮）时快速刷新，让「已排队 / 正在签哪家」看得见
+        const fast = running || refreshing || busy === 'checkin' || busy === 'refresh';
+        const t = setInterval(load, fast ? 3000 : 15000);
         return () => clearInterval(t);
-      }, [isOpen, load]);
+      }, [isOpen, load, running, refreshing, busy]);
 
       React.useEffect(() => {
         if (data && data.settings && data.settings.checkinTime) setTimeDraft(data.settings.checkinTime);
@@ -121,10 +132,20 @@ window.__ModuleLoader__.load({
       const act = async (which) => {
         setBusy(which);
         try { await fetch(`${API}/${which}`, { method: 'POST' }); } catch (e) { setErr(String(e.message || e)); }
-        setTimeout(() => { setBusy(''); load(); }, 2500);
+        await load();   // 立刻读回「已排队 / 进行中」，而不是等 2.5s 后无声复位
+        setTimeout(() => setBusy(''), which === 'checkin' ? 6000 : 1500);
       };
 
       if (!isOpen) return null;
+
+      const c = (data && data.checkin) || null;
+      const stageText = !c ? ''
+        : c.stage === 'queued' ? '已排队，等自动任务启动（最多 1 分钟）'
+          : c.stage === 'launching' ? '正在启动客户端…'
+            : c.stage === 'app' ? `正在签到：${c.app || ''}`
+              : c.stage === 'wrapping' ? '正在收尾…' : '';
+      const since = c && c.at ? Math.max(0, Math.round((Date.now() - Date.parse(c.at)) / 1000)) : 0;
+      const markOf = (s) => (s === 'ok' ? '✓' : s === 'fail' ? '✗' : '跳过');
 
       return h('div', { style: S.panel, role: 'dialog', 'aria-label': '额度看板' },
         h('div', { style: S.head },
@@ -132,6 +153,12 @@ window.__ModuleLoader__.load({
           h('button', { style: S.close, onClick: () => setOpen(false), title: '关闭' }, '×'),
         ),
         err ? h('div', { style: { ...S.note, color: 'var(--dsw-alias-state-error-primary)' } }, `本地服务未连接：${err}`) : null,
+        running || refreshing ? h('div', { style: S.live },
+          h('span', { style: S.dot }),
+          running ? `${stageText}${since > 1 ? ` · 已 ${since}s` : ''}` : '正在采集余额（启动客户端，约 1-2 分钟）…',
+        ) : null,
+        c && c.stalled ? h('div', { style: { ...S.note, color: 'var(--dsw-alias-state-warn-primary)' } },
+          '已排队 2 分钟还没开始：检查计划任务 DSH-CheckinNow 是否启用') : null,
         !data && !err ? h('div', { style: S.note }, '加载中…') : null,
         data ? data.apps.map((app) => h('div', { key: app.id, style: S.card },
           h('div', { style: S.row },
@@ -201,11 +228,15 @@ window.__ModuleLoader__.load({
           '签到后保留客户端',
         ),
         h('div', { style: S.foot },
-          h('button', { style: S.action(false), disabled: !!busy, onClick: () => act('refresh') },
-            busy === 'refresh' ? '采集中…' : '刷新余额'),
-          h('button', { style: S.action(true), disabled: !!busy, onClick: () => act('checkin') },
-            busy === 'checkin' ? '签到中…' : '立即签到'),
+          h('button', { style: S.action(false), disabled: !!busy || refreshing, onClick: () => act('refresh') },
+            busy === 'refresh' || refreshing ? '采集中…' : '刷新余额'),
+          h('button', { style: { ...S.action(true), opacity: running ? 0.65 : 1 }, disabled: !!busy || running, onClick: () => act('checkin') },
+            (busy === 'checkin' || running) ? '签到中…' : '立即签到'),
         ),
+        data && data.lastResults && data.lastResults.length ? h('div', { style: S.note },
+          `上次签到 ${data.checkinAt ? new Date(data.checkinAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—'}：` +
+          data.lastResults.map((r) => `${r.app} ${markOf(r.status)}`).join(' · '),
+        ) : null,
         data ? h('div', { style: S.updated },
           `余额 ${data.balanceAt ? new Date(data.balanceAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—'}` +
           ` · 签到 ${data.checkinAt ? new Date(data.checkinAt).toLocaleTimeString('zh-CN', { hour12: false }) : '—'}`) : null,
