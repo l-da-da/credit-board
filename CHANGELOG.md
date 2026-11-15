@@ -2,6 +2,23 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.2.0] - 2026-11-15
+
+### Added
+
+- **AStudio（讯飞）接入**：看板新增一行，显示「积分余额」+ 套餐（点左下角账号，读弹出菜单），账号与 `expectedAccounts.astudio` 不一致时同样标红。
+- AStudio 的「每日登录积分」是登录后由服务端按套餐自动发放的，界面里没有可点的签到按钮，所以签到步骤 = **保证当天启动并登录过**：没开就由脚本拉起，读一次余额顺手确认登录状态（`已登录（用户0443）· 1,200 积分 · 体验版`）。
+- **可选接入配置**：`config.json` 的 `astudio` 段 —— `enabled`（整行关掉）、`port`（调试端口，默认 9535）、`exe`（客户端路径）、`restartIfOpenWithoutPort`（默认 `false`）。
+
+### Changed
+
+- AStudio 是 IDE，**不会**为了拿调试端口去重启正在使用的实例（跳过并保留上次读数）；WorkBuddy / 豆包 / CodeArts 这类聊天客户端仍然会自动重启一次。
+- README / SKILL / plugins 文案与 locale 从「四家」更新为五家。
+
+### Fixed
+
+- `tasklist` 改用绝对路径调用（计划任务上下文里 PATH 不一定有 System32）。
+
 ## [1.1.1] - 2026-11-15
 
 ### Fixed

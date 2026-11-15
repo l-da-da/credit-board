@@ -18,6 +18,7 @@ const CFG = {
   workbuddy: { name: 'WorkBuddy', proc: 'WorkBuddy', log: path.join(HOME, '.workbuddy', 'logs', 'main.log') },
   doubao: { name: '豆包', proc: 'Doubao', port: 9531 },
   codearts: { name: 'CodeArts', proc: 'CodeArts', port: 9534 },
+  astudio: { name: 'AStudio', proc: 'AStudio', port: 9535 },
 };
 
 const args = process.argv.slice(2);
@@ -47,11 +48,20 @@ try {
 } catch { launched = {}; }
 
 function tasklist(name) {
+  const exe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tasklist.exe');
   try {
-    const out = execFileSync('tasklist', ['/FI', `IMAGENAME eq ${name}.exe`, '/FO', 'CSV', '/NH'], { encoding: 'utf8' });
+    const out = execFileSync(exe, ['/FI', `IMAGENAME eq ${name}.exe`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
     const m = out.match(/"([^"]+\.exe)","(\d+)"/);
     return m ? Number(m[1]) : null;
   } catch { return null; }
+}
+
+// AStudio 的调试端口可以在 config.json 的 astudio.port 里改（默认 9535）
+function astudioPort() {
+  try {
+    const c = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8').replace(/^\uFEFF/, ''));
+    return Number(c && c.astudio && c.astudio.port) || 9535;
+  } catch { return 9535; }
 }
 
 async function waitFor(fn, timeoutMs, intervalMs = 700) {
@@ -607,8 +617,91 @@ async function doCodeArts() {
   if (s2) return { status: 'ok', detail: `点了「${s1.btnText}」，已显示今日已领` };
   return { status: 'fail', detail: `点了「${s1.btnText}」但没看到今日已领` };
 }
+// ---------- AStudio（讯飞）：确认今天登录过，读「积分余额」+ 套餐 ----------
+// 它的「每日登录积分」是登录后由服务端按套餐自动发放的，界面上没有签到/领取按钮，
+// 所以这一步 = 保证客户端今天启动并登录过（没开就由 run-checkin.ps1 启动），顺便把余额带回来。
+async function doAStudio() {
+  const port = astudioPort();
+  // 只看 CDP 端口：任务上下文里 spawn tasklist 取进程列表不可靠（stdout 管道会失败），
+  // 而「能不能连上 9535」本身就等价于「开没开、带没带调试端口」。
+  const reachable = launched.astudio
+    ? await waitFor(() => cdpReady(port), 120_000, 1500)
+    : await cdpReady(port);
+  if (!reachable) {
+    return {
+      status: launched.astudio ? 'fail' : 'skipped',
+      detail: launched.astudio
+        ? 'AStudio 起来了但 120 秒内没开调试端口 9535'
+        : 'AStudio 没在运行或没带调试端口（9535 未监听），本次跳过',
+    };
+  }
+
+  const page = await waitFor(async () => {
+    const ts = await listTargets(port).catch(() => []);
+    return ts.find((t) => t.type === 'page');
+  }, 60_000, 1000);
+  if (!page) return { status: 'fail', detail: 'AStudio 起了调试端口但没有页面' };
+
+  const cdp = await connect(page.webSocketDebuggerUrl);
+  try {
+    await cdp.send('Runtime.enable');
+    await applyViewport(cdp, 1440, 900);
+
+    const ready = await waitFor(
+      () => evalJs(cdp, `!!document.querySelector('[data-slot="sidebar-footer"]')`).catch(() => false),
+      120_000, 1500,
+    );
+    if (!ready) return { status: 'fail', detail: 'AStudio 界面没加载出来' };
+
+    // 侧边栏底部是账号；点开后菜单里有「积分余额 / 套餐 / 升级套餐 / 设置 / 退出登录」
+    const read = () => evalJs(cdp, `(() => {
+      const foot = document.querySelector('[data-slot="sidebar-footer"]');
+      const name = foot
+        ? ((foot.innerText || '').split('\\n').map((s) => s.trim()).filter(Boolean)[0] || null)
+        : null;
+      const menu = document.querySelector('[data-slot="menu-popup"]');
+      const t = menu ? (menu.innerText || '') : '';
+      const m = t.match(/积分余额\\s*\\n?\\s*([\\d,\\.]+)\\s*\\n?\\s*([^\\n]+)/);
+      return { name, balance: m ? m[1] : null, plan: m ? m[2].trim() : null };
+    })()`).catch(() => null);
+
+    const s0 = await read();
+    if (!s0 || !s0.name) return { status: 'fail', detail: 'AStudio 没有登录（侧边栏看不到账号）' };
+
+    let st = s0;
+    if (!st.balance) {
+      // 冷启动时菜单里的「积分余额」要等积分接口回来才会出现，多试几轮、每轮等十几秒
+      for (let attempt = 0; attempt < 3 && !st.balance; attempt++) {
+        const box = await evalJs(cdp, `(() => {
+          const foot = document.querySelector('[data-slot="sidebar-footer"]');
+          if (!foot) return null;
+          const r = foot.getBoundingClientRect();
+          return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+        })()`).catch(() => null);
+        if (!box) break;
+        await clickAt(cdp, box.x, box.y);
+        const got = await waitFor(async () => {
+          const s = await read();
+          return s && s.balance ? s : null;
+        }, attempt === 0 ? 12_000 : 6_000, 800);
+        if (got) { st = { ...got, name: s0.name }; break; }
+        await pressEsc(cdp).catch(() => {});
+        await sleep(700);
+      }
+    }
+
+    const bal = st.balance ? `${st.balance} 积分` : '余额读不到';
+    return {
+      status: 'ok',
+      detail: `已登录（${s0.name}）· ${bal}${st.plan ? ` · ${st.plan}` : ''} · 每日登录积分随登录发放`,
+    };
+  } finally {
+    cdp.close();
+  }
+}
+
 // ---------- 主流程 ----------
-const RUNNERS = { workbuddy: doWorkBuddy, doubao: doDoubao, codearts: doCodeArts };
+const RUNNERS = { workbuddy: doWorkBuddy, doubao: doDoubao, codearts: doCodeArts, astudio: doAStudio };
 try { fs.writeFileSync(path.join(LOG_DIR, `checkin-${todayLocal()}.log`), '', 'utf8'); } catch { }
 const results = [];
 for (const key of Object.keys(RUNNERS)) {

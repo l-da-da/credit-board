@@ -220,6 +220,66 @@ async function collectCodeArts() {
   cdp.close();
   return data;
 }
+// AStudio 的调试端口可以在 config.json 的 astudio.port 里改（默认 9535）
+function astudioPort() {
+  try {
+    const c = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8').replace(/^\uFEFF/, ''));
+    return Number(c && c.astudio && c.astudio.port) || 9535;
+  } catch { return 9535; }
+}
+
+// ---------- AStudio（讯飞）：点左下角账号，读「积分余额」+ 套餐 ----------
+async function collectAStudio() {
+  const port = astudioPort();
+  const page = await findTarget(port, (t) => t.type === 'page');
+  if (!page) return null;
+  const cdp = await connectWithRetry(page);
+  if (!cdp) return null;
+  try { await cdp.send('Runtime.enable'); } catch { }
+  await applyViewport(cdp, 1440, 900);
+  if (!(await waitReady(cdp, 120_000))) { cdp.close(); return null; }
+
+  // 侧边栏底部的账号（IDE 启动比聊天客户端慢，最多等 90 秒）
+  let box = null;
+  const end = Date.now() + 90_000;
+  while (Date.now() < end && !box) {
+    box = await evalJs(cdp, `(() => {
+      const foot = document.querySelector('[data-slot="sidebar-footer"]');
+      if (!foot) return null;
+      const r = foot.getBoundingClientRect();
+      if (r.width < 60 || r.height < 10) return null;
+      const name = ((foot.innerText || '').split('\\n').map((s) => s.trim()).filter(Boolean)[0]) || '';
+      if (!name) return null;
+      return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`).catch(() => null);
+    if (!box) await sleep(2000);
+  }
+  if (!box) { cdp.close(); return null; }
+
+  let data = null;
+  for (let attempt = 0; attempt < 3 && !data; attempt++) {
+    await clickBox(cdp, box);
+    await sleep(2000);
+    data = await evalJs(cdp, `(() => {
+      const foot = document.querySelector('[data-slot="sidebar-footer"]');
+      const name = foot ? ((foot.innerText || '').split('\\n').map((s) => s.trim()).filter(Boolean)[0] || null) : null;
+      const menu = document.querySelector('[data-slot="menu-popup"]');
+      const t = menu ? (menu.innerText || '') : '';
+      const m = t.match(/积分余额\\s*\\n?\\s*([\\d,\\.]+)\\s*\\n?\\s*([^\\n]+)/);
+      return m ? { account: name, balance: m[1], plan: m[2].trim() } : null;
+    })()`).catch(() => null);
+    if (!data) {
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).catch(() => {});
+      await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).catch(() => {});
+      await sleep(800);
+    }
+  }
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).catch(() => {});
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).catch(() => {});
+  cdp.close();
+  return data;
+}
+
 // ---------- WorkBuddy：点头像读「积分余额」 ----------
 async function collectWorkBuddyPanel() {
   const port = 9533;
@@ -303,6 +363,7 @@ out.apps.workbuddy = { ...(prev.workbuddy || {}), ...(wbLog || {}), ...(wbPanel 
 try { out.apps.autoclaw = (await collectAutoClaw()) || prev.autoclaw || null; } catch { out.apps.autoclaw = prev.autoclaw || null; }
 try { out.apps.doubao = (await collectDoubao()) || prev.doubao || null; } catch { out.apps.doubao = prev.doubao || null; }
 try { out.apps.codearts = (await collectCodeArts()) || prev.codearts || null; } catch { out.apps.codearts = prev.codearts || null; }
+try { out.apps.astudio = (await collectAStudio()) || prev.astudio || null; } catch { out.apps.astudio = prev.astudio || null; }
 out.stale = !out.apps.autoclaw || !out.apps.doubao;
 
 fs.writeFileSync(path.join(LOG_DIR, 'balance.json'), JSON.stringify(out, null, 2), 'utf8');

@@ -12,12 +12,29 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 
 function Test-Running([string]$name) { return [bool](Get-Process -Name $name -ErrorAction SilentlyContinue) }
 
+# config.json: keepOpen + optional AStudio wiring
+$cfgObj = @{}
+$cfgPath = Join-Path $root 'config.json'
+if (Test-Path $cfgPath) { try { $cfgObj = Get-Content $cfgPath -Raw | ConvertFrom-Json } catch { $cfgObj = @{} } }
+$keepOpen = $false
+if ($null -ne $cfgObj.keepOpen) { $keepOpen = [bool]$cfgObj.keepOpen }
+
 $apps = @(
     @{ key = 'workbuddy'; proc = 'WorkBuddy'; exe = (Join-Path $env:LOCALAPPDATA 'Programs\WorkBuddy\WorkBuddy.exe'); args = '--remote-debugging-port=9533' },
     @{ key = 'doubao';   proc = 'Doubao';   exe = (Join-Path $env:LOCALAPPDATA 'Doubao\Application\Doubao\Doubao.exe'); args = '--remote-debugging-port=9531' },
     @{ key = 'codearts'; proc = 'CodeArts'; exe = (Join-Path $env:LOCALAPPDATA 'Programs\CodeArts\CodeArts.exe'); args = '--remote-debugging-port=9534' }
     @{ key = 'autoclaw'; proc = 'AutoClaw2'; exe = (Join-Path $env:LOCALAPPDATA 'Programs\AutoClaw2\AutoClaw2.exe'); args = '--remote-debugging-port=9532' }
+    @{ key = 'astudio';   proc = 'AStudio';   exe = (Join-Path $env:LOCALAPPDATA 'Programs\AStudio\AStudio.exe'); args = '--remote-debugging-port=9535' }
 )
+
+if ($cfgObj.astudio -and $null -ne $cfgObj.astudio.enabled -and -not [bool]$cfgObj.astudio.enabled) {
+    $apps = @($apps | Where-Object { $_.key -ne 'astudio' })
+    Add-Content -Path $log -Value ('[{0}] astudio disabled in config, skipped' -f (Get-Date -Format 'HH:mm:ss'))
+} elseif ($cfgObj.astudio) {
+    $as = $apps | Where-Object { $_.key -eq 'astudio' }
+    if ($as -and $cfgObj.astudio.port) { $as.args = "--remote-debugging-port=$([int]$cfgObj.astudio.port)" }
+    if ($as -and $cfgObj.astudio.exe) { $as.exe = [string]$cfgObj.astudio.exe }
+}
 
 $launched = @()
 foreach ($a in $apps) {
@@ -32,17 +49,12 @@ foreach ($a in $apps) {
 }
 Add-Content -Path $log -Value ("[{0}] launched: {1}" -f (Get-Date -Format 'HH:mm:ss'), ($launched -join ','))
 
-$keepOpen = $false
-$cfgPath = Join-Path $root 'config.json'
-if (Test-Path $cfgPath) {
-    try { $keepOpen = [bool](Get-Content $cfgPath -Raw | ConvertFrom-Json).keepOpen } catch { $keepOpen = $false }
-}
 $node = Join-Path $root 'runtime\node.exe'
 $out = & $node (Join-Path $root 'collect.mjs') 2>&1 | Out-String
 $code = $LASTEXITCODE
 Add-Content -Path $log -Value $out -Encoding UTF8
 
-$procMap = @{ workbuddy = 'WorkBuddy'; doubao = 'Doubao'; autoclaw = 'AutoClaw2'; codearts = 'CodeArts' }
+$procMap = @{ workbuddy = 'WorkBuddy'; doubao = 'Doubao'; autoclaw = 'AutoClaw2'; codearts = 'CodeArts'; astudio = 'AStudio' }
 foreach ($k in $launched) {
     if ($keepOpen) { break }
     $pn = $procMap[$k]

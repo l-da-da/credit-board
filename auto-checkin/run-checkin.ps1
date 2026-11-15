@@ -160,10 +160,26 @@ function Test-PortOpen([int]$port) {
 }
 
 $apps = @(
-    @{ key = 'workbuddy'; proc = 'WorkBuddy'; exe = (Join-Path $env:LOCALAPPDATA 'Programs\WorkBuddy\WorkBuddy.exe'); args = '--remote-debugging-port=9533'; port = 9533 },
-    @{ key = 'doubao';    proc = 'Doubao';    exe = (Join-Path $env:LOCALAPPDATA 'Doubao\Application\Doubao\Doubao.exe'); args = '--remote-debugging-port=9531'; port = 9531 }
-    @{ key = 'codearts';  proc = 'CodeArts';  exe = (Join-Path $env:LOCALAPPDATA 'Programs\CodeArts\CodeArts.exe'); args = '--remote-debugging-port=9534'; port = 9534 }
+    @{ key = 'workbuddy'; proc = 'WorkBuddy'; exe = (Join-Path $env:LOCALAPPDATA 'Programs\WorkBuddy\WorkBuddy.exe'); args = '--remote-debugging-port=9533'; port = 9533; restart = $true },
+    @{ key = 'doubao';    proc = 'Doubao';    exe = (Join-Path $env:LOCALAPPDATA 'Doubao\Application\Doubao\Doubao.exe'); args = '--remote-debugging-port=9531'; port = 9531; restart = $true }
+    @{ key = 'codearts';  proc = 'CodeArts';  exe = (Join-Path $env:LOCALAPPDATA 'Programs\CodeArts\CodeArts.exe'); args = '--remote-debugging-port=9534'; port = 9534; restart = $true }
+    @{ key = 'astudio';   proc = 'AStudio';   exe = (Join-Path $env:LOCALAPPDATA 'Programs\AStudio\AStudio.exe');   args = '--remote-debugging-port=9535'; port = 9535; restart = $false }
 )
+
+# AStudio wiring: optional "astudio" block in config.json (enabled / exe / port / restart)
+#   "astudio": { "enabled": true, "exe": "C:\\...\\AStudio.exe", "port": 9535 }
+$asCfg = $cfgObj.astudio
+$asEntry = $apps | Where-Object { $_.key -eq 'astudio' }
+if ($asCfg -and $asEntry) {
+    if ($null -ne $asCfg.enabled -and -not [bool]$asCfg.enabled) {
+        $apps = @($apps | Where-Object { $_.key -ne 'astudio' })
+        Add-Content -Path $log -Value ('[{0}] astudio disabled in config, skipped' -f (Get-Date -Format 'HH:mm:ss'))
+    } else {
+        if ($asCfg.port) { $asEntry.port = [int]$asCfg.port; $asEntry.args = "--remote-debugging-port=$($asEntry.port)" }
+        if ($asCfg.exe) { $asEntry.exe = [string]$asCfg.exe }
+        if ($null -ne $asCfg.restartIfOpenWithoutPort) { $asEntry.restart = [bool]$asCfg.restartIfOpenWithoutPort }
+    }
+}
 
 # Apps that were already running (without a debug port) get restarted once so
 # CDP can drive them. They belong to the user, so they are left running
@@ -173,6 +189,11 @@ $restarted = @{}
 foreach ($a in $apps) {
     if (Test-Running $a.proc) {
         if ($a.port -gt 0 -and -not (Test-PortOpen $a.port)) {
+            if (-not $a.restart) {
+                # IDE-like client: do not restart it just to get a debug port (the user may be working in it)
+                Add-Content -Path $log -Value ("[{0}] {1} running without debug port {2}, no restart (kept open)" -f (Get-Date -Format 'HH:mm:ss'), $a.key, $a.port)
+                continue
+            }
             Add-Content -Path $log -Value ("[{0}] {1} running without debug port {2}, restarting" -f (Get-Date -Format 'HH:mm:ss'), $a.key, $a.port)
             Stop-Process -Name $a.proc -Force -ErrorAction SilentlyContinue
             $restarted[$a.key] = $true
@@ -223,7 +244,7 @@ if ($code -eq 0) {
         cmd /c "schtasks /change /tn DSH-DailyCheckin /disable >nul 2>&1"
         Add-Content -Path $log -Value ('[{0}] check-in done, polling paused until tomorrow' -f (Get-Date -Format 'HH:mm:ss'))
     }
-    $procMap = @{ workbuddy = 'WorkBuddy'; doubao = 'Doubao'; codearts = 'CodeArts' }
+    $procMap = @{ workbuddy = 'WorkBuddy'; doubao = 'Doubao'; codearts = 'CodeArts'; astudio = 'AStudio' }
     if ($keepOpen) {
         Add-Content -Path $log -Value ("[{0}] keepOpen=true, leave clients running" -f (Get-Date -Format 'HH:mm:ss'))
     }

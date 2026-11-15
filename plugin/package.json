@@ -1,9 +1,9 @@
 {
   "name": "@local/credit-board",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
-  "description": "Daily check-in and credit board for WorkBuddy, Doubao, CodeArts and AutoClaw",
+  "description": "Daily check-in and credit board for WorkBuddy, Doubao, CodeArts, AStudio and AutoClaw",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

@@ -117,6 +117,8 @@ function board() {
   const wbResult = byApp['WorkBuddy'];
   const ac = balance.apps && balance.apps.autoclaw;
   const ca = balance.apps && balance.apps.codearts;
+  const ast = balance.apps && balance.apps.astudio;
+  const asResult = byApp['AStudio'];
   const db = balance.apps && balance.apps.doubao;
   const num = (v) => { const n = Number(String(v ?? '').replace(/[^\d.]/g, '')); return Number.isFinite(n) ? n : null; };
   const dbNow = db ? num(db.total || db.accumulated) : null;
@@ -173,6 +175,16 @@ function board() {
         signed: byApp['CodeArts'] ? !String(byApp['CodeArts'].status).includes('fail') : (ca && typeof ca.signedToday === 'boolean' ? ca.signedToday : null),
         signedNote: byApp['CodeArts'] ? String(byApp['CodeArts'].detail).slice(0, 80) : (ca && typeof ca.signedToday === 'boolean' ? (ca.signedToday ? '活动福利：今日已领' : '活动福利：待签到') : '今天还没采集'),
       },
+      ...(settings.astudio && settings.astudio.enabled === false ? [] : [{
+        id: 'astudio',
+        name: 'AStudio',
+        account: (ast && ast.account) || null,
+        accountOk: acctOk('astudio', ast && ast.account),
+        balance: ast && ast.balance ? `${ast.balance} 积分` : null,
+        balanceNote: ast && ast.plan ? `套餐 ${ast.plan}` : (ast && ast.balance ? '积分余额' : '点「刷新余额」采集'),
+        signed: asResult ? String(asResult.status) === 'ok' : false,
+        signedNote: asResult ? String(asResult.detail).slice(0, 90) : '今天还没跑过',
+      }]),
       {
         id: 'autoclaw',
         name: 'AutoClaw',
@@ -236,9 +248,17 @@ const server = http.createServer((req, res) => {
         if (patch.expectedAccounts && typeof patch.expectedAccounts === 'object' && !Array.isArray(patch.expectedAccounts)) {
           const clean = {};
           for (const [k, v] of Object.entries(patch.expectedAccounts)) {
-            if (['workbuddy', 'codearts'].includes(k) && typeof v === 'string' && v.trim()) clean[k] = v.trim();
+            if (['workbuddy', 'codearts', 'astudio'].includes(k) && typeof v === 'string' && v.trim()) clean[k] = v.trim();
           }
           next.expectedAccounts = clean;
+        }
+        if (patch.astudio && typeof patch.astudio === 'object' && !Array.isArray(patch.astudio)) {
+          const a = {};
+          if (typeof patch.astudio.enabled === 'boolean') a.enabled = patch.astudio.enabled;
+          const p = Number(patch.astudio.port);
+          if (Number.isInteger(p) && p >= 1024 && p <= 65535) a.port = p;
+          if (typeof patch.astudio.exe === 'string' && patch.astudio.exe.trim()) a.exe = patch.astudio.exe.trim();
+          if (Object.keys(a).length) next.astudio = { ...(readConfig().astudio || {}), ...a };
         }
         const settings = writeConfig(next);
         log(`config updated: ${JSON.stringify(settings)}`);

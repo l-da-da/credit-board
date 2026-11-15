@@ -4,7 +4,7 @@
 
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/l-da-da/credit-board)
 
-把 WorkBuddy、豆包、CodeArts（以及 AutoClaw 的余额）的签到和积分汇总到 **DeepSeek Harness** 侧边栏的一个面板里，并每天自动签到。
+把 WorkBuddy、豆包、CodeArts、AStudio（以及 AutoClaw 的余额）的签到和积分汇总到 **DeepSeek Harness** 侧边栏的一个面板里，并每天自动签到。
 
 > Windows 10/11 · 需要 Node.js 22+ · 需要已登录 WorkBuddy / 豆包客户端
 
@@ -22,6 +22,9 @@ WorkBuddy   2,220.5 积分   套餐 体验版        今日已签
             ███████░░░░░  2600 / 5000        今日已签
             用户400177: ok；ldda: ok
 
+AStudio     1,200 积分     套餐 体验版        今日已签
+            已登录（用户0443）
+
 AutoClaw    1.6 万        总积分
 
 [ 刷新余额 ]  [ 立即签到 ]
@@ -31,7 +34,7 @@ AutoClaw    1.6 万        总积分
 - **自动签到**：默认每天 09:30，面板里可改时间（改完立即生效）；窗口最小化、不抢焦点
 - **签到有实时进度**：点「立即签到」后约 1 秒就开始跑（`DSH-CheckinNow` 长轮询 flag），面板顶部实时显示「已排队 / 正在签到：豆包…」，跑完给出上次各家结果
 - **豆包多账号**：自动切换账号逐个签到，签完切回你原来的账号
-- **账号校验**：配置 `expectedAccounts` 后，看板显示 WorkBuddy / CodeArts 当前登录账号，登错账号标红提醒（见下文「账号校验」）
+- **账号校验**：配置 `expectedAccounts` 后，看板显示 WorkBuddy / CodeArts / AStudio 当前登录账号，登错账号标红提醒（见下文「账号校验」）
 - **刷新余额**：后台最小化启动客户端读一次余额（约 2–3 分钟）
 - **保留进程**：勾选后签到结束不关客户端，下次直接连上（省去冷启动）
 
@@ -65,19 +68,22 @@ dsh plugin --profile web add "$env:LOCALAPPDATA\credit-board\plugin"
 
 ## 账号校验（可选）
 
-CodeArts 和 WorkBuddy 是单账号应用，客户端里登错账号的话，签到和余额都会读错对象。在 `auto-checkin/config.json` 里加上期望账号：
+CodeArts、WorkBuddy、AStudio 是单账号应用，客户端里登错账号的话，签到和余额都会读错对象。在 `auto-checkin/config.json` 里加上期望账号：
 
 ```json
 {
   "keepOpen": false,
   "checkinTime": "09:30",
-  "expectedAccounts": { "workbuddy": "你的昵称", "codearts": "账号名或邮箱" }
+  "expectedAccounts": { "workbuddy": "你的昵称", "codearts": "账号名或邮箱", "astudio": "用户0443" },
+  "astudio": { "enabled": true, "port": 9535 }
 }
 ```
 
 之后每次「刷新余额」会顺便读出当前登录账号显示在看板上；**与期望值不一致时整行标红并提示 ⚠ 与期望账号不符**。不配置 `expectedAccounts` 时只显示账号、不做比对。账号名是从头像菜单文本里启发式读取的，应用改版可能导致读不到（此时只显示余额、不比对）。
 
 也可以调服务接口设置：`POST http://127.0.0.1:47122/config`，body 带 `{"expectedAccounts": {...}}`。
+
+`astudio` 这一段是可选接入配置，默认就是上面的值：`enabled: false` 会把 AStudio 从看板里去掉；`port` / `exe` 可以改调试端口和客户端路径；`restartIfOpenWithoutPort: true` 允许为了拿调试端口重启你正开着的 AStudio（默认 false——它是 IDE，跳过更安全）。
 
 ## 手动操作
 
@@ -97,6 +103,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\auto-checkin\install-board
 | WorkBuddy | 调应用自身的签到接口（`wb.account.checkin()`，等同点侧边栏活动卡片上的「立即领取」） | 点头像面板读「积分余额」 |
 | 豆包 | 界面上点：账号 → 免费用豆包工作 → 每日签到 | 读页面上的「累计获得额度」（总额度） |
 | CodeArts | 点左下角账号头像 → 活动福利 → 第一项「每日签到领100积分」→「每日领取」 | 头像菜单里「积分用量 x / y」的 y |
+| AStudio | 每日登录积分随登录自动发放（界面里没有可点的签到按钮）——每天确保客户端登录一次 | 点左下角账号，读菜单里的「积分余额」+ 套餐 |
 | AutoClaw | 不参与 | 点右上角积分读「总积分」 |
 
 签到和采集都通过 **CDP（Chrome DevTools Protocol）** 在应用内部操作：不修改应用文件、不读取密码、不上传任何数据。看板服务只监听 `127.0.0.1:47122`。
@@ -117,7 +124,7 @@ credit-board/
 │  ├─ board-server.mjs      # 看板数据服务 127.0.0.1:47122（只写 flag，不 spawn）
 │  ├─ cdp.mjs               # CDP 连接的小封装
 │  ├─ enable-checkin.ps1    # 恢复轮询任务（Reset 任务调用）
-│  ├─ config.json           # { keepOpen, checkinTime, expectedAccounts? }（不进仓库）
+│  ├─ config.json           # { keepOpen, checkinTime, expectedAccounts?, astudio? }（不进仓库）
 │  ├─ install-task.ps1      # 注册 3 个签到任务
 │  └─ install-board.ps1     # 注册看板服务 + 采集任务
 ├─ plugin/                  # DSH 插件（@local/credit-board）
@@ -134,10 +141,11 @@ credit-board/
 
 ## 已知限制
 
-- **额度是封闭的**：三家的签到积分只能在自己的客户端里花，没有 API 可以转换，所以看板只是「把客户端里的数字搬到 DSH 里」。
+- **额度是封闭的**：各家的签到积分只能在自己的客户端里花，没有 API 可以转换，所以看板只是「把客户端里的数字搬到 DSH 里」。
 - **必须启动客户端**才能签到（最小化，不抢焦点）；电脑关机当天签不了，登录后补跑。
 - **签到要靠调试端口（CDP）**：如果客户端是你自己打开的、没带 `--remote-debugging-port`，脚本会先把它重启一次再签。WorkBuddy / 豆包 / CodeArts 被重启的实例，签到结束后保持打开；脚本自己启动的才按「签到后保留客户端」决定关不关。
 - WorkBuddy 的积分要点头像面板才读得到；豆包显示的是「累计获得额度」，剩余额度在「设置 → 订阅与额度管理」。
+- AStudio 是 IDE：如果它正开着但没带调试端口，脚本**不会**重启它（本次跳过，余额保持上次读数）；它也没有可点的签到按钮，每日登录积分由服务端随登录发放。
 - 界面改版可能导致点击失效，届时需要更新选择器。
 - 自动化操作客户端界面属于个人使用，可能受各家服务条款约束，风险自担；本项目不收集任何数据。
 
