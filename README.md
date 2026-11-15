@@ -37,27 +37,31 @@ AutoClaw    1.6 万        总积分
 
 ## 安装
 
+推荐一键脚本（复制程序、注册计划任务、把插件里的脚本目录指向安装位置）：
+
 ```powershell
-# 获取仓库，并把插件注册进 DeepSeek Harness（Web profile；桌面版同样适用）
 git clone https://github.com/l-da-da/credit-board
-dsh plugin --profile web add ./credit-board/plugin
+powershell -NoProfile -ExecutionPolicy Bypass -File .\credit-board\install.ps1
 ```
 
-或者用一键脚本（把脚本复制到安装目录并注册全部计划任务）：
+装完按提示把插件加进 DSH：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+# 默认安装到 %LOCALAPPDATA%\credit-board，可用 -Target 改
+dsh plugin --profile web add "$env:LOCALAPPDATA\credit-board\plugin"
 ```
+
+或在 DSH 里：设置 → Plugins → **Add plugin** → 选 `%LOCALAPPDATA%\credit-board\plugin`，刷新页面。
+
+> 不要直接 `dsh plugin add` 仓库里的 `./credit-board/plugin`：那份 `cordis.patch.yml` 的 `checkinDir` 是占位符 `__CHECKIN_DIR__`，要经 `install.ps1` 替换成实际安装目录；而且只加插件不会注册签到计划任务。
 
 签到调度：`DSH-DailyCheckin` 每 15 分钟醒一次，脚本读 `config.json` 的 `checkinTime`（默认 09:30，面板里可改）决定是否执行；**当天成功签到后会自动停掉轮询**，第二天 00:05 由 `DSH-CheckinReset` 重新启用。手动签到走 `DSH-CheckinNow`（带 -Force，跳过时间闸门）。
 
-脚本会：
+安装脚本会：
 
 1. 把程序复制到 `%LOCALAPPDATA%\credit-board`（可用 `-Target` 改）
 2. 注册五个计划任务：`DSH-DailyCheckin`、`DSH-CheckinReset`、`DSH-CheckinNow`、`DSH-CreditBoard`、`DSH-CreditCollect`
 3. 打印把插件加进 DSH 的那一步
-
-然后：DSH → 设置 → Plugins → **Add plugin** → 选择 `<安装目录>\plugin`，刷新页面。
 
 ## 账号校验（可选）
 

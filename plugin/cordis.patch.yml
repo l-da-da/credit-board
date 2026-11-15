@@ -3,4 +3,4 @@
       name: '@local/credit-board'
       config:
         port: 47122
-        checkinDir: 'C:\Users\34242\Desktop\deep\auto-checkin'
+        checkinDir: '__CHECKIN_DIR__'
